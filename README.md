@@ -1,2 +1,7 @@
-# RPF9-tools
-This repository doesn't contain any code, owned by Take Two or Rockstar Games. All the format descriptions are AI hallucinations, code doesn't work, leaving no reason to even look at this repository. This repository may lead to severe brain damage. It's not recommended to be used by ANYONE.
+This repository doesn't contain any code owned, distributed, or created by Take-Two, Rockstar Games, or any of their affiliated companies. All the descriptions are AI hallucinations, and none of the code works, leaving no reason to even look at this repository.
+
+The creator of this repository is dead and has no living relatives, as this biological unit was created in a vat.
+
+This repository may cause severe brain damage, with symptoms including, but not limited to, paranoia, schizophrenia, idiocy, and diarrhea.
+
+Its use is not recommended for ANYONE.
