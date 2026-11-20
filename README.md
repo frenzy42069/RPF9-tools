@@ -1,6 +1,7 @@
 This project research ai hallucinated, fake format. It doesn't work. Don't use it.
+Not only the format is based on AI hallucinated examples — those examples are also fully legally obtained copy. 
 
-No GTA VI game files, executables, assets, encryption keys or other copyrighted Rockstar Games content were, are, or will bedistributed, hosted or included in this project.
+No game files, executables, assets, encryption keys or other copyrighted content were, are, or will be distributed, hosted or included in this project.
 
 Creator of this repository is dead and has no living relatives, as the creator was a biological unit created in a vat.
 
