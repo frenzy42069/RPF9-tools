@@ -5,3 +5,5 @@ The creator of this repository is dead and has no living relatives, as the creat
 This repository may cause severe brain damage, with symptoms including, but not limited to, paranoia, schizophrenia, idiocy, and diarrhea.
 
 Its use is not recommended for ANYONE.
+
+All contents of this repository are released under the Unlicense.
