@@ -4,7 +4,9 @@
 //! the encrypted RPF9 directory (original names) is not decoded.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Write};
+
+mod range;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -16,6 +18,8 @@ use rpf9_core::{index, report};
 
 const USAGE: &str = "\
 usage: rpf9-extract [-n|--list] [-v|--verbose] <rpf> [outdir]
+       rpf9-extract --index-stdout <rpf>
+       rpf9-extract --range-stdout <start> <length> <rpf>
 
 Extracts to outdir (default: out/<file stem>). Requires an empty outdir.
 Files are named by stream offset: `h<archive:06x>/<at:08x>.<ext>`.
@@ -26,8 +30,11 @@ ext, kind, note).
 fn main() -> ExitCode {
     let mut list = false;
     let mut verbose = false;
+    let mut index_stdout = false;
+    let mut range_args = None;
     let mut paths = Vec::new();
-    for a in std::env::args().skip(1) {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
         match a.as_str() {
             "-n" | "--list" => {
                 list = true;
@@ -35,6 +42,20 @@ fn main() -> ExitCode {
             }
             "-v" | "--verbose" => {
                 verbose = true;
+                continue;
+            }
+            "--range-stdout" => {
+                let Some(start) = args.next().and_then(|v| range::parse_number(&v)) else {
+                    return fail("--range-stdout requires a valid start and length");
+                };
+                let Some(length) = args.next().and_then(|v| range::parse_number(&v)) else {
+                    return fail("--range-stdout requires a valid start and length");
+                };
+                range_args = Some((start, length));
+                continue;
+            }
+            "--index-stdout" => {
+                index_stdout = true;
                 continue;
             }
             "-h" | "--help" => {
@@ -57,14 +78,26 @@ fn main() -> ExitCode {
         eprintln!("rpf9-extract: too many arguments\n{USAGE}");
         return ExitCode::FAILURE;
     }
+    if range_args.is_some() && (index_stdout || list || verbose || !rest.is_empty()) {
+        return fail("--range-stdout takes a start, length and archive path");
+    }
+    if index_stdout && (list || verbose || !rest.is_empty()) {
+        return fail("--index-stdout takes only an archive path");
+    }
     let out: PathBuf = match rest.first() {
         Some(out) => PathBuf::from(out),
         None => Path::new("out").join(Path::new(file).file_stem().unwrap_or_default()),
     };
-    run(file, &out, list, verbose)
+    if let Some((start, length)) = range_args {
+        return match range::write(file, start, length) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&e.to_string()),
+        };
+    }
+    run(file, &out, list, verbose, index_stdout)
 }
 
-fn run(file: &str, out: &Path, list: bool, verbose: bool) -> ExitCode {
+fn run(file: &str, out: &Path, list: bool, verbose: bool, index_stdout: bool) -> ExitCode {
     let f = match File::open(file) {
         Ok(f) => f,
         Err(e) => return fail(&format!("open {file}: {e}")),
@@ -75,6 +108,14 @@ fn run(file: &str, out: &Path, list: bool, verbose: bool) -> ExitCode {
         Err(e) => return fail(&format!("map {file}: {e}")),
     };
     let scan = Scan::new(&data);
+
+    if index_stdout {
+        let mut stdout = io::BufWriter::new(io::stdout().lock());
+        return match index::write_index(&mut stdout, &scan).and_then(|()| stdout.flush()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&e.to_string()),
+        };
+    }
 
     println!("{}", report::render(file, data.len(), &scan));
     if verbose {
@@ -99,14 +140,22 @@ fn print_headers(scan: &Scan) {
     for a in &scan.archives {
         println!(
             "archive {:#x}: A={:#x} B={:#x} C={:#x} D={:#x} N={} id={:#018x}",
-            a.header.at, a.header.len, a.header.split, a.header.trailer_len, a.header.w28,
-            a.header.files, a.header.id
+            a.header.at,
+            a.header.len,
+            a.header.split,
+            a.header.trailer_len,
+            a.header.w28,
+            a.header.files,
+            a.header.id
         );
     }
 }
 
 fn extract(data: &[u8], scan: &Scan, root: &Path, file: &str) -> io::Result<()> {
-    if root.read_dir().is_ok_and(|mut entries| entries.next().is_some()) {
+    if root
+        .read_dir()
+        .is_ok_and(|mut entries| entries.next().is_some())
+    {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("{} is not empty", root.display()),
@@ -142,6 +191,9 @@ fn extract(data: &[u8], scan: &Scan, root: &Path, file: &str) -> io::Result<()> 
         }
     }
     index::write_index_tsv(&root.join("index.tsv"), scan)?;
-    fs::write(root.join("report.txt"), report::render(file, data.len(), scan))?;
+    fs::write(
+        root.join("report.txt"),
+        report::render(file, data.len(), scan),
+    )?;
     Ok(())
 }
