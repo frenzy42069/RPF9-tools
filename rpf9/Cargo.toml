@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["rpf9-core", "rpf9-extract", "rpf9-fuse"]
+
+[workspace.package]
+edition = "2021"

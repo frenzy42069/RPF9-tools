@@ -1,0 +1,9 @@
+[package]
+name = "rpf9-fuse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fuser = "0.19"
+memmap2 = "0.9"
+rpf9-core = { path = "../rpf9-core" }

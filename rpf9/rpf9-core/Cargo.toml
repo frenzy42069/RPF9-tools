@@ -1,0 +1,8 @@
+[package]
+name = "rpf9-core"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+flate2 = "1"
+memchr = "2"
