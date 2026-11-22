@@ -550,7 +550,7 @@ mod tests {
         let ffmpeg = dir.path().join("ffmpeg");
         std::fs::write(
             &ffmpeg,
-            "#!/bin/sh\nfor output do :; done\nprintf fake-mp4 > \"$output\"\n",
+            "#!/bin/sh\ncase \" $* \" in *' -an '*) ;; *) exit 1 ;; esac\nfor output do :; done\nprintf fake-mp4 > \"$output\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();

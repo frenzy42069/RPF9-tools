@@ -66,7 +66,12 @@ pub(crate) enum Projection {
 }
 
 pub(crate) fn key(kind: &FileKind, options: &Options) -> String {
-    format!("readable-v1:{kind:?}:{options:?}")
+    let version = if matches!(kind, FileKind::Video { .. }) {
+        "readable-v2"
+    } else {
+        "readable-v1"
+    };
+    format!("{version}:{kind:?}:{options:?}")
 }
 
 pub(crate) fn project(
@@ -323,16 +328,13 @@ fn video(
         .args([
             "-map",
             "0:v:0",
-            "-map",
-            "0:a?",
+            "-an",
             "-c:v",
             "libx264",
             "-vf",
             "scale=ceil(iw/2)*2:ceil(ih/2)*2",
             "-pix_fmt",
             "yuv420p",
-            "-c:a",
-            "aac",
             "-movflags",
             "+faststart",
             "-f",

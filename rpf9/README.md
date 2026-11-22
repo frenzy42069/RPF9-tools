@@ -186,7 +186,9 @@ scans it and saves the listing for later visits and mounts. In `--readable`
 mode, supported `.ttpf` packs and embedded texture dictionaries open as
 folders of PNGs, ADAT banks have folders of Opus or XMA tracks, and named
 drawables expose GLB previews. The raw entries remain available. Pass
-`--ffmpeg /path/to/bink2-capable/ffmpeg` to add MP4 previews.
+`--ffmpeg /path/to/bink2-capable/ffmpeg` to add silent MP4 previews. Xbox Bink2
+audio can decode as loud noise with the current companion, so mounted previews
+omit the audio track.
 
 The first open of a converted file prepares a seekable cached copy. MP4
 previews show the source clip size until the converted size is available.
