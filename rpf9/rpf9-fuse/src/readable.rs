@@ -327,6 +327,8 @@ fn video(
             "0:a?",
             "-c:v",
             "libx264",
+            "-vf",
+            "scale=ceil(iw/2)*2:ceil(ih/2)*2",
             "-pix_fmt",
             "yuv420p",
             "-c:a",

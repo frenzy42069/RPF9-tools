@@ -68,6 +68,9 @@ pub(crate) fn export(
                 "-map", "0:v:0", "-map", "0:a?", "-c:v", video, "-pix_fmt", "yuv420p", "-c:a",
                 audio,
             ]);
+        if matches!(format, VideoFormat::Mp4 | VideoFormat::Mkv) {
+            command.args(["-vf", "scale=ceil(iw/2)*2:ceil(ih/2)*2"]);
+        }
         if matches!(format, VideoFormat::Mp4) {
             command.args(["-movflags", "+faststart"]);
         }
