@@ -82,8 +82,8 @@ rpf9/target/release/rpf9 extract game/levels.rpf extracted-levels
 
 Models default to GLB, textures to PNG, localization to JSONL, and video to
 MP4. Supported formats appear under `rpf9 export --help`. Use
-`--ffmpeg=/path/to/ffmpeg` to choose an FFmpeg build. Xbox Bink2 needs a build
-that can decode those streams, such as the [mobipeg FFmpeg fork](https://github.com/quatric/mobipeg).
+`--ffmpeg=/path/to/ffmpeg` to choose an FFmpeg build. For Xbox Bink2 to MP4,
+use the [Bink2 FFmpeg companion](#bink2-ffmpeg-companion).
 `--format bk2` copies the original clip. `rpf9 mount` delegates to the
 workspace FUSE tool.
 
@@ -102,6 +102,36 @@ format coverage. Texture export covers supported layouts, including named
 BC2, BC3, BC5, and BC7 textures from embedded dictionaries and TTPF packs.
 Localization rows carry recovered keys and use a null locale when the
 resource does not identify it.
+
+### Bink2 FFmpeg companion
+
+Build a standalone FFmpeg on x86-64 Linux with Bash, Git, GCC, GNU Make, and
+`pkg-config`. The Windows x64 build also needs the `x86_64-w64-mingw32-`
+GCC and binutils toolchain. Install NASM to enable x86 assembly optimizations.
+Run from the repository root.
+
+```sh
+scripts/bink2-ffmpeg/build.sh linux-x86_64 rpf9/target/bink2-ffmpeg
+scripts/bink2-ffmpeg/build.sh windows-x86_64 rpf9/target/bink2-ffmpeg
+```
+
+Use `ffmpeg` or `ffmpeg.exe` from the matching build directory with the export
+command. Linux FUSE uses the same executable for on-demand previews.
+
+```sh
+ffmpeg="$PWD/rpf9/target/bink2-ffmpeg/rpf9-bink2-ffmpeg-linux-x86_64/ffmpeg"
+rpf9 export movies.rpf --kind video --offset 0x7000 --ffmpeg="$ffmpeg" -o previews
+rpf9 mount /path/to/build /path/to/mountpoint --readable --ffmpeg "$ffmpeg"
+```
+
+The companion converts Bink video and audio to H.264/AAC MP4. For other output
+formats or asset conversions, pass a build with the required codecs and muxers.
+Some Xbox clips still fail to decode or have audio dropouts. Use `--format bk2`
+to export the original clip in those cases.
+The [mobipeg](https://github.com/quatric/mobipeg) Bink 2 decoder is
+AGPL-3.0-or-later. Distribute the companion binary archive alongside its
+matching `-source.tar.gz`, which contains both pinned source trees and the
+build script. Unpack the source archive into a new directory to rebuild offline.
 
 ## Model and texture conversion
 
