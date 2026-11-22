@@ -14,15 +14,16 @@ use memmap2::Mmap;
 use rpf9_core::kinds::Kind;
 use rpf9_core::scan::Scan;
 use rpf9_core::stream;
-use rpf9_core::{index, report};
+use rpf9_core::{index, names, report};
 
 const USAGE: &str = "\
-usage: rpf9-extract [-n|--list] [-v|--verbose] <rpf> [outdir]
+usage: rpf9-extract [-n|--list] [-v|--verbose] [--offset-names] <rpf> [outdir]
        rpf9-extract --index-stdout <rpf>
        rpf9-extract --range-stdout <start> <length> <rpf>
 
 Extracts to outdir (default: out/<file stem>). Requires an empty outdir.
-Files are named by stream offset: `h<archive:06x>/<at:08x>.<ext>`.
+Uses embedded filenames where available and stream offsets otherwise.
+--offset-names uses offset-based filenames for all entries.
 Writes report.txt and index.tsv (archive, offset, length, size, parts,
 ext, kind, note).
 ";
@@ -31,6 +32,7 @@ fn main() -> ExitCode {
     let mut list = false;
     let mut verbose = false;
     let mut index_stdout = false;
+    let mut recover_names = None;
     let mut range_args = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -52,6 +54,14 @@ fn main() -> ExitCode {
                     return fail("--range-stdout requires a valid start and length");
                 };
                 range_args = Some((start, length));
+                continue;
+            }
+            "--recover-names" => {
+                recover_names = Some(true);
+                continue;
+            }
+            "--offset-names" => {
+                recover_names = Some(false);
                 continue;
             }
             "--index-stdout" => {
@@ -78,11 +88,16 @@ fn main() -> ExitCode {
         eprintln!("rpf9-extract: too many arguments\n{USAGE}");
         return ExitCode::FAILURE;
     }
-    if range_args.is_some() && (index_stdout || list || verbose || !rest.is_empty()) {
+    if range_args.is_some()
+        && (index_stdout || list || verbose || recover_names.is_some() || !rest.is_empty())
+    {
         return fail("--range-stdout takes a start, length and archive path");
     }
-    if index_stdout && (list || verbose || !rest.is_empty()) {
+    if index_stdout && (list || verbose || recover_names.is_some() || !rest.is_empty()) {
         return fail("--index-stdout takes only an archive path");
+    }
+    if recover_names.is_some() && list {
+        return fail("filename options require extraction");
     }
     let out: PathBuf = match rest.first() {
         Some(out) => PathBuf::from(out),
@@ -94,10 +109,24 @@ fn main() -> ExitCode {
             Err(e) => fail(&e.to_string()),
         };
     }
-    run(file, &out, list, verbose, index_stdout)
+    run(
+        file,
+        &out,
+        list,
+        verbose,
+        index_stdout,
+        recover_names.unwrap_or(true),
+    )
 }
 
-fn run(file: &str, out: &Path, list: bool, verbose: bool, index_stdout: bool) -> ExitCode {
+fn run(
+    file: &str,
+    out: &Path,
+    list: bool,
+    verbose: bool,
+    index_stdout: bool,
+    recover_names: bool,
+) -> ExitCode {
     let f = match File::open(file) {
         Ok(f) => f,
         Err(e) => return fail(&format!("open {file}: {e}")),
@@ -124,7 +153,7 @@ fn run(file: &str, out: &Path, list: bool, verbose: bool, index_stdout: bool) ->
     if list {
         return ExitCode::SUCCESS;
     }
-    if let Err(e) = extract(&data, &scan, out, file) {
+    if let Err(e) = extract(&data, &scan, out, file, recover_names) {
         return fail(&e.to_string());
     }
     println!("wrote to {}", out.display());
@@ -151,7 +180,13 @@ fn print_headers(scan: &Scan) {
     }
 }
 
-fn extract(data: &[u8], scan: &Scan, root: &Path, file: &str) -> io::Result<()> {
+fn extract(
+    data: &[u8],
+    scan: &Scan,
+    root: &Path,
+    file: &str,
+    recover_names: bool,
+) -> io::Result<()> {
     if root
         .read_dir()
         .is_ok_and(|mut entries| entries.next().is_some())
@@ -169,9 +204,8 @@ fn extract(data: &[u8], scan: &Scan, root: &Path, file: &str) -> io::Result<()> 
         }
         let dir = root.join(a.name());
         fs::create_dir_all(&dir)?;
+        let mut used_names = names::Filenames::default();
         for s in &streams {
-            let ext = s.kind.label().0;
-            let path = dir.join(format!("{:08x}.{ext}", s.at));
             let buf = match s.kind {
                 Kind::Movie | Kind::Adat | Kind::Png | Kind::Riff { .. } => {
                     data[s.at..s.at + s.stored_len].to_vec()
@@ -187,7 +221,11 @@ fn extract(data: &[u8], scan: &Scan, root: &Path, file: &str) -> io::Result<()> 
                     out
                 }
             };
-            fs::write(path, buf)?;
+            let name = recover_names
+                .then(|| names::embedded_stem(s, &buf))
+                .flatten();
+            let filename = used_names.for_stream(s, name.as_deref());
+            fs::write(dir.join(filename), buf)?;
         }
     }
     index::write_index_tsv(&root.join("index.tsv"), scan)?;

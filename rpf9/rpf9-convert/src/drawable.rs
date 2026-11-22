@@ -32,9 +32,47 @@ pub(crate) fn load_named(path: &Path, offset: u64) -> Result<(String, Mesh)> {
         pad == [0; 15],
         "expected zero padding before graphics stream"
     );
-    let gpu = read_page(&mut reader).context("decode drawable graphics stream")?;
+    let mut gpu = read_page(&mut reader).context("decode drawable graphics stream")?;
     let name = drawable_name(&cpu)?.to_owned();
-    Ok((name, decode(&cpu, &gpu)?))
+    loop {
+        match decode(&cpu, &gpu) {
+            Ok(mesh) => return Ok((name, mesh)),
+            Err(error)
+                if error.chain().any(|cause| {
+                    matches!(
+                        cause.to_string().as_str(),
+                        "truncated drawable"
+                            | "truncated drawable positions"
+                            | "truncated meshlet vertex map"
+                    )
+                }) && gpu.len().is_multiple_of(65536)
+                    && (gpu.len() as u64) < PAGE_LIMIT =>
+            {
+                let end = reader.stream_position()?;
+                let padding = (16 - (end - offset) % 16) % 16;
+                let mut bytes = [0; 15];
+                reader.read_exact(&mut bytes[..padding as usize])?;
+                ensure!(
+                    bytes == [0; 15],
+                    "expected zero padding before graphics continuation"
+                );
+                let continuation =
+                    read_page(&mut reader).context("decode graphics continuation")?;
+                ensure!(
+                    !continuation.is_empty()
+                        && gpu.len() + continuation.len() <= PAGE_LIMIT as usize,
+                    "invalid graphics continuation length"
+                );
+                ensure!(
+                    !(continuation.starts_with(&[0; 8])
+                        && address(&continuation, 8, CPU_BASE).is_ok()),
+                    "graphics continuation points to a new resource"
+                );
+                gpu.extend_from_slice(&continuation);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn read_page(reader: &mut impl BufRead) -> Result<Vec<u8>> {
@@ -67,17 +105,7 @@ fn address(bytes: &[u8], offset: usize, base: u32) -> Result<usize> {
 }
 
 fn drawable_name(cpu: &[u8]) -> Result<&str> {
-    let name_start = address(cpu, 0xa8, CPU_BASE)?;
-    let bytes = cpu
-        .get(name_start..)
-        .context("invalid drawable name pointer")?;
-    let end = bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .context("unterminated drawable name")?;
-    let name = std::str::from_utf8(&bytes[..end]).context("invalid drawable name")?;
-    ensure!(name.ends_with(".#dr"), "expected a named RAGE drawable");
-    Ok(name)
+    rpf9_core::names::drawable_name(cpu).context("expected a named RAGE drawable")
 }
 
 fn decode(cpu: &[u8], gpu: &[u8]) -> Result<Mesh> {
@@ -164,6 +192,30 @@ fn decode_geometry(cpu: &[u8], gpu: &[u8], geometry: usize, mesh: &mut Mesh) -> 
         base.checked_add(u32::try_from(vertices)?).is_some(),
         "too many vertices"
     );
+    // Attribute 0x28 stores two signed fixed-point coordinates per vertex.
+    // The source uses a top-left UV origin, while Mesh follows OBJ convention.
+    let uv_offset = (0..0x5c).step_by(4).find_map(|offset| {
+        let descriptor = word(gpu, attributes + offset).ok()?;
+        (descriptor & 0xff == 0x28).then_some(((descriptor >> 8) as usize) * 2)
+    });
+    let uv_data = uv_offset.and_then(|offset| {
+        let start = attributes.checked_add(offset)?;
+        let end = start.checked_add(vertices.checked_mul(4)?)?;
+        (offset >= position_end)
+            .then(|| gpu.get(start..end))
+            .flatten()
+    });
+    let previous_vertices = mesh.positions.len();
+    match (mesh.texcoords.as_mut(), uv_data) {
+        (Some(uvs), Some(data)) => append_uvs(uvs, data),
+        (None, Some(data)) if previous_vertices == 0 => {
+            let mut uvs = Vec::with_capacity(vertices);
+            append_uvs(&mut uvs, data);
+            mesh.texcoords = Some(uvs);
+        }
+        _ => mesh.texcoords = None,
+    }
+
     for packed in vertex_data.as_chunks::<8>().0 {
         let x = u32::from_le_bytes([packed[1], packed[2], packed[3], 0]);
         let y = u32::from_le_bytes([packed[0], packed[4], packed[5], 0]);
@@ -222,4 +274,50 @@ fn decode_geometry(cpu: &[u8], gpu: &[u8], geometry: usize, mesh: &mut Mesh) -> 
         "incomplete meshlets"
     );
     Ok(())
+}
+
+fn append_uvs(uvs: &mut Vec<[f32; 2]>, data: &[u8]) {
+    for bytes in data.as_chunks::<4>().0 {
+        let u = i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 8192.0;
+        let v = i16::from_le_bytes([bytes[2], bytes[3]]) as f32 / 8192.0;
+        uvs.push([u, 1.0 - v]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn decodes_signed_fixed_point_uvs() {
+        let mut uvs = Vec::new();
+        append_uvs(&mut uvs, &[0, 0, 0, 32, 0, 32, 0, 0, 0, 224, 0, 16]);
+        assert_eq!(uvs, vec![[0.0, 0.0], [1.0, 1.0], [-1.0, 0.5]]);
+    }
+
+    #[test]
+    fn decodes_local_drawable_with_graphics_continuation_when_available() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../game/levels.rpf");
+        if !path.is_file() {
+            return;
+        }
+        let (name, mesh) = load_named(&path, 0xf9c8b010).unwrap();
+        assert_eq!(name, "int_abd_1_laundry_details_ceiling_panels.#dr");
+        assert!(!mesh.positions.is_empty());
+        assert!(!mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn decodes_uvs_on_local_drawable_when_available() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../game/levels.rpf");
+        if !path.is_file() {
+            return;
+        }
+        let mesh = load(&path, 0xf9c9d010).unwrap();
+        assert_eq!(
+            mesh.texcoords.unwrap(),
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        );
+    }
 }

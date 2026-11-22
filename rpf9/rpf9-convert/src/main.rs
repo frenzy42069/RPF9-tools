@@ -1,19 +1,8 @@
-mod catalog;
-mod drawable;
-mod mesh;
-mod model_output;
-mod texture;
+use std::{path::PathBuf, process::ExitCode};
 
-use std::{
-    io::{BufWriter, Write},
-    path::{Path, PathBuf},
-    process::{Command, ExitCode, Stdio},
-};
-
-use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
-use image::{DynamicImage, ImageFormat, RgbaImage};
-use tempfile::NamedTempFile;
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use rpf9_convert::{export_model, export_texture, list_models, ModelFormat, TextureFormat};
 
 #[derive(Parser)]
 #[command(version, about = "Convert model and texture files")]
@@ -41,7 +30,7 @@ enum Convert {
     Model {
         input: PathBuf,
         #[arg(short, long, value_enum, default_value = "glb")]
-        format: model_output::Format,
+        format: ModelFormat,
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Byte offset of a drawable stream in an RPF, in decimal or 0x hex.
@@ -64,28 +53,6 @@ enum Convert {
     },
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum TextureFormat {
-    Png,
-    #[value(alias = "jpg")]
-    Jpeg,
-    Webp,
-    Bmp,
-    Tga,
-}
-
-impl TextureFormat {
-    fn settings(self) -> (&'static str, ImageFormat, &'static str) {
-        match self {
-            Self::Png => ("png", ImageFormat::Png, "png"),
-            Self::Jpeg => ("jpg", ImageFormat::Jpeg, "mjpeg"),
-            Self::Webp => ("webp", ImageFormat::WebP, "libwebp"),
-            Self::Bmp => ("bmp", ImageFormat::Bmp, "bmp"),
-            Self::Tga => ("tga", ImageFormat::Tga, "targa"),
-        }
-    }
-}
-
 fn main() -> ExitCode {
     match run(Cli::parse().command) {
         Ok(()) => ExitCode::SUCCESS,
@@ -104,7 +71,7 @@ fn run(command: Convert) -> Result<()> {
             scan_bytes,
             limit,
         } => {
-            let models = catalog::list(&input, start, scan_bytes, limit)?;
+            let models = list_models(&input, start, scan_bytes, limit)?;
             serde_json::to_writer(std::io::stdout().lock(), &models)?;
             println!();
             Ok(())
@@ -119,17 +86,7 @@ fn run(command: Convert) -> Result<()> {
                 Some(offset) => input.with_extension(format!("{offset:x}.{}", format.extension())),
                 None => input.with_extension(format.extension()),
             });
-            let mesh = match offset {
-                Some(offset) => drawable::load(&input, offset),
-                None => mesh::load(&input),
-            }
-            .with_context(|| format!("read model {}", input.display()))?;
-            write_output(&output, |file| {
-                let mut writer = BufWriter::new(file.as_file_mut());
-                model_output::write(&mut writer, &mesh, format)?;
-                writer.flush()?;
-                Ok(())
-            })
+            export_model(&input, offset, &output, format)
         }
         Convert::Texture {
             input,
@@ -138,17 +95,12 @@ fn run(command: Convert) -> Result<()> {
             entry,
             ffmpeg,
         } => {
-            let (extension, image_format, codec) = format.settings();
+            let extension = format.extension();
             let output = output.unwrap_or_else(|| match entry {
                 Some(index) => input.with_extension(format!("{index}.{extension}")),
                 None => input.with_extension(extension),
             });
-            let rgba = texture::load(&input, entry)
-                .with_context(|| format!("read texture {}", input.display()))?;
-            write_output(&output, |file| match ffmpeg {
-                Some(executable) => encode_ffmpeg(&executable, rgba, codec, file.path()),
-                None => encode_image(rgba, image_format, file),
-            })
+            export_texture(&input, entry, &output, format, ffmpeg.as_deref())
         }
     }
 }
@@ -166,74 +118,4 @@ fn parse_offset(value: &str) -> Result<u64, std::num::ParseIntError> {
         Some(hex) => u64::from_str_radix(hex, 16),
         None => value.parse(),
     }
-}
-
-fn write_output(path: &Path, write: impl FnOnce(&mut NamedTempFile) -> Result<()>) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = NamedTempFile::new_in(parent)
-        .with_context(|| format!("create temporary file in {}", parent.display()))?;
-    write(&mut temp).with_context(|| format!("encode {}", path.display()))?;
-    temp.persist_noclobber(path)
-        .with_context(|| format!("create output {}", path.display()))?;
-    Ok(())
-}
-
-fn encode_image(rgba: RgbaImage, format: ImageFormat, file: &mut NamedTempFile) -> Result<()> {
-    let image = DynamicImage::ImageRgba8(rgba);
-    let image = if format == ImageFormat::Jpeg {
-        DynamicImage::ImageRgb8(image.into_rgb8())
-    } else {
-        image
-    };
-    let mut writer = BufWriter::new(file.as_file_mut());
-    image.write_to(&mut writer, format)?;
-    writer.flush()?;
-    Ok(())
-}
-
-fn encode_ffmpeg(executable: &Path, rgba: RgbaImage, codec: &str, output: &Path) -> Result<()> {
-    let mut png = tempfile::tempfile()?;
-    use std::io::Seek;
-    DynamicImage::ImageRgba8(rgba).write_to(&mut png, ImageFormat::Png)?;
-    png.rewind()?;
-    let status = Command::new(executable)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-nostdin",
-            "-y",
-            "-f",
-            "image2pipe",
-            "-c:v",
-            "png",
-            "-i",
-            "pipe:0",
-            "-frames:v",
-            "1",
-            "-threads",
-            "1",
-            "-c:v",
-            codec,
-            "-f",
-            "image2",
-            "-update",
-            "1",
-        ])
-        .arg(output)
-        .stdin(Stdio::from(png))
-        .stdout(Stdio::null())
-        .status()
-        .with_context(|| format!("run FFmpeg at {}", executable.display()))?;
-    if !status.success() {
-        bail!("FFmpeg exited with {status}");
-    }
-    anyhow::ensure!(
-        std::fs::metadata(output)?.len() > 0,
-        "FFmpeg produced no image"
-    );
-    Ok(())
 }

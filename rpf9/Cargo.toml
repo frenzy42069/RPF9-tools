@@ -1,6 +1,29 @@
 [workspace]
 resolver = "2"
-members = ["rpf9-core", "rpf9-extract", "rpf9-fuse", "rpf9-convert"]
+members = [
+    "rpf9-core",
+    "rpf9-extract",
+    "rpf9-fuse",
+    "rpf9-convert",
+    "rpf9-navmesh",
+    "rpf9-shader",
+]
 
 [workspace.package]
 edition = "2021"
+
+[package]
+name = "rpf9"
+version = "0.1.0"
+edition.workspace = true
+license = "Unlicense"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+memmap2 = "0.9"
+rpf9-convert = { path = "rpf9-convert" }
+rpf9-core = { path = "rpf9-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"

@@ -1,8 +1,11 @@
 //! Full scan: walk archives, record streams, group by owner.
 
+use std::collections::HashMap;
+
 use crate::archive::{find_archives, Archive};
 use crate::media::carve_media;
-use crate::stream::{walk, Stream};
+use crate::names;
+use crate::stream::{walk_with, Stream};
 
 pub struct Scan {
     pub archives: Vec<Archive>,
@@ -11,14 +14,37 @@ pub struct Scan {
 
 impl Scan {
     pub fn new(data: &[u8]) -> Scan {
+        Self::collect_streams(data, |_, _| {})
+    }
+
+    /// Collect embedded filename stems during the existing decompression pass.
+    pub fn with_names(data: &[u8]) -> (Scan, HashMap<usize, String>) {
+        let mut stems = HashMap::new();
+        let scan = Self::collect_streams(data, |stream, page| {
+            if let Some(name) = names::embedded_stem(stream, page) {
+                stems.insert(stream.at, name);
+            }
+        });
+        (scan, stems)
+    }
+
+    fn collect_streams(data: &[u8], mut on_stream: impl FnMut(&Stream, &[u8])) -> Scan {
         let archives = find_archives(data);
         let mut streams = Vec::new();
         for a in &archives {
-            streams.extend(walk(data, a.body.start, a.trailer.start));
+            streams.extend(walk_with(
+                data,
+                a.body.start,
+                a.trailer.start,
+                &mut on_stream,
+            ));
         }
         // Carve media in the archive body gaps (movies, banks, images).
         let covered: Vec<_> = {
-            let mut c = streams.iter().map(|s| s.at..s.at + s.stored_len).collect::<Vec<_>>();
+            let mut c = streams
+                .iter()
+                .map(|s| s.at..s.at + s.stored_len)
+                .collect::<Vec<_>>();
             c.sort_by_key(|r| r.start);
             c
         };
@@ -83,7 +109,10 @@ mod tests {
         // 259 complete XML files."
         let streams = scan.owned_streams(0);
         assert!(streams.len() >= 954, "got {} streams", streams.len());
-        let xml = streams.iter().filter(|s| s.kind == crate::kinds::Kind::Xml).count();
+        let xml = streams
+            .iter()
+            .filter(|s| s.kind == crate::kinds::Kind::Xml)
+            .count();
         assert!(xml >= 259, "got {xml} XML streams");
     }
 
@@ -92,7 +121,11 @@ mod tests {
         let data = std::fs::read(game_path("script.rpf")).unwrap();
         let scan = Scan::new(&data);
         // doc: outer + nested children at 0x1000 and 0xC4000.
-        assert!(scan.archives.len() >= 3, "got {} archives", scan.archives.len());
+        assert!(
+            scan.archives.len() >= 3,
+            "got {} archives",
+            scan.archives.len()
+        );
         let child = scan
             .archives
             .iter()
@@ -123,11 +156,9 @@ mod tests {
         assert!(child.header.id != 0);
         let streams = scan.owned_streams(idx);
         assert!(streams.len() >= 1115, "got {} streams", streams.len());
-        assert!(
-            streams
-                .iter()
-                .any(|s| s.at == 0x11f2000 && s.kind == crate::kinds::Kind::PsIn)
-        );
+        assert!(streams
+            .iter()
+            .any(|s| s.at == 0x11f2000 && s.kind == crate::kinds::Kind::PsIn));
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod header;
 pub mod index;
 pub mod kinds;
 pub mod media;
+pub mod names;
 pub mod report;
 pub mod scan;
 pub mod stream;

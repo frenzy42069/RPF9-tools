@@ -8,14 +8,14 @@ use serde_json::{json, Value};
 use crate::mesh::Mesh;
 
 #[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum Format {
+pub enum Format {
     Glb,
     Gltf,
     Obj,
 }
 
 impl Format {
-    pub(crate) fn extension(self) -> &'static str {
+    pub fn extension(self) -> &'static str {
         match self {
             Self::Glb => "glb",
             Self::Gltf => "gltf",

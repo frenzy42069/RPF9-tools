@@ -7,3 +7,8 @@ edition = "2021"
 fuser = "0.19"
 memmap2 = "0.9"
 rpf9-core = { path = "../rpf9-core" }
+rpf9-convert = { path = "../rpf9-convert" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"

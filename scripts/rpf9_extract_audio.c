@@ -64,7 +64,7 @@ static void put(uint8_t *out, size_t offset, uint64_t value, unsigned count)
 
 static void write_bytes(FILE *out, const void *data, size_t bytes)
 {
-    if (fwrite(data, 1, bytes, out) != bytes)
+    if (out && fwrite(data, 1, bytes, out) != bytes)
         system_fail("writing output");
 }
 
@@ -363,6 +363,11 @@ static size_t ogg_page(FILE *out, const Mux *mux, const Packet *packets, size_t 
     }
     page[26] = (uint8_t)segments;
     size_t bytes = 27 + segments;
+    if (!out) {
+        for (size_t i = 0; i < count; ++i)
+            bytes += packets[i].bytes;
+        return bytes;
+    }
     for (size_t i = 0; i < count; ++i) {
         memcpy(page + bytes, packets[i].data, packets[i].bytes);
         bytes += packets[i].bytes;
@@ -493,7 +498,7 @@ static size_t write_xma_header(FILE *out, size_t size, Format format)
 
 static void export_track(Archive a, Bank bank, unsigned number, unsigned id, unsigned occurrence,
                          const Tag *tags, unsigned tag_count, Tag payload, Format format,
-                         bool raw, Mux *mux, FILE *manifest, char *path, size_t prefix, Totals *totals)
+                         bool raw, bool list_only, Mux *mux, FILE *manifest, char *path, size_t prefix, Totals *totals)
 {
     char name[48] = "";
     const char *status;
@@ -524,10 +529,13 @@ static void export_track(Archive a, Bank bank, unsigned number, unsigned id, uns
             snprintf(name, sizeof(name), "%05u-%02x-%02u.%s", number, payload.kind, occurrence, ext);
         else
             snprintf(name, sizeof(name), "%05u-%02x.%s", number, payload.kind, ext);
-        strcpy(path + prefix, name);
-        FILE *out = fopen(path, "wbx");
-        if (!out)
-            system_fail(path);
+        FILE *out = NULL;
+        if (!list_only) {
+            strcpy(path + prefix, name);
+            out = fopen(path, "wbx");
+            if (!out)
+                system_fail(path);
+        }
         if (multi_opus) {
             written = write_ogg_multi(out, mux, multi, format, frame_values, number);
             status = "opus";
@@ -549,7 +557,7 @@ static void export_track(Archive a, Bank bank, unsigned number, unsigned id, uns
             else
                 ++totals->raw;
         }
-        if (fclose(out) != 0)
+        if (out && fclose(out) != 0)
             system_fail(path);
     }
 
@@ -574,7 +582,7 @@ static void export_track(Archive a, Bank bank, unsigned number, unsigned id, uns
     fputc('\n', manifest);
 }
 
-static void extract_bank(Archive a, Bank bank, bool raw, Mux *mux, FILE *manifest,
+static void extract_bank(Archive a, Bank bank, bool raw, bool list_only, unsigned track, unsigned wanted_occurrence, Mux *mux, FILE *manifest,
                          char *path, size_t root_end, Totals *totals)
 {
     sprintf(path + root_end, "/%09zX", bank.base);
@@ -599,21 +607,23 @@ static void extract_bank(Archive a, Bank bank, bool raw, Mux *mux, FILE *manifes
                 tag.end <= a.size && memcmp(a.data + tag.start, "MThd\0\0\0\6", 8) == 0))
                 payloads[payload_count++] = tag;
         }
-        if (!payload_count)
+        if (!payload_count || (track && i + 1 != track))
             continue;
         Format format = track_format(a, tags, tag_count);
         unsigned audio = 0, midi = 0;
         for (unsigned j = 0; j < payload_count; ++j) {
             Tag payload = payloads[j];
-            if (!directory_created && payload.start < payload.end && payload.end <= a.size) {
+            unsigned occurrence = payload.kind == 0x55 ? ++audio : ++midi;
+            if (track && (payload.kind != 0x55 || occurrence != wanted_occurrence))
+                continue;
+            if (!list_only && !directory_created && payload.start < payload.end && payload.end <= a.size) {
                 if (mkdir(path, 0777) != 0)
                     system_fail(path);
                 path[prefix - 1] = '/';
                 directory_created = true;
             }
-            unsigned occurrence = payload.kind == 0x55 ? ++audio : ++midi;
             export_track(a, bank, i + 1, entry & 0x1fffffff, occurrence, tags, tag_count,
-                         payload, format, raw, mux, manifest, path, prefix, totals);
+                         payload, format, raw, list_only, mux, manifest, path, prefix, totals);
         }
     }
     if (ferror(manifest) || fflush(manifest) == EOF)
@@ -631,14 +641,30 @@ static void print_totals(FILE *out, Totals t)
 int main(int argc, char **argv)
 {
     const char *source = NULL, *output = NULL;
-    bool raw = false, selected = false;
+    bool raw = false, selected = false, list_only = false;
+    unsigned track = 0, occurrence = 1;
     size_t base = 0;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0) {
-            puts("usage: rpf9_extract_audio ARCHIVE --out-dir DIR [--bank OFFSET] [--raw]");
+            puts("usage: rpf9_extract_audio ARCHIVE --out-dir DIR [--bank OFFSET] [--raw]\n"
+                 "       rpf9_extract_audio ARCHIVE --bank OFFSET --list\n"
+                 "       rpf9_extract_audio ARCHIVE --bank OFFSET --track N [--occurrence N] --out-dir DIR");
             return 0;
         }
-        if (strcmp(argv[i], "--raw") == 0) {
+        if (strcmp(argv[i], "--list") == 0) {
+            list_only = true;
+        } else if ((strcmp(argv[i], "--track") == 0 || strcmp(argv[i], "--occurrence") == 0) && i + 1 < argc) {
+            bool is_track = strcmp(argv[i], "--track") == 0;
+            const char *value = argv[++i];
+            char *end;
+            uintmax_t number = strtoumax(value, &end, 10);
+            if (value[0] < '0' || value[0] > '9' || *end || !number || number > UINT32_MAX)
+                fail("invalid track or occurrence");
+            if (is_track)
+                track = (unsigned)number;
+            else
+                occurrence = (unsigned)number;
+        } else if (strcmp(argv[i], "--raw") == 0) {
             raw = true;
         } else if (strcmp(argv[i], "--out-dir") == 0 && i + 1 < argc) {
             output = argv[++i];
@@ -657,7 +683,7 @@ int main(int argc, char **argv)
             fail("expected ARCHIVE --out-dir DIR [--bank OFFSET] [--raw]");
         }
     }
-    if (!source || !output || !*output)
+    if (!source || (!list_only && (!output || !*output)) || (list_only && output))
         fail("expected ARCHIVE --out-dir DIR [--bank OFFSET] [--raw]");
     int fd = open(source, O_RDONLY);
     if (fd < 0)
@@ -673,8 +699,15 @@ int main(int argc, char **argv)
         system_fail(source);
     close(fd);
     Archive a = {mapping, size};
-    if (memcmp(a.data, "9FPR", 4) != 0)
-        fail("expected an RPF9 archive with on-disk magic 9FPR");
+    if (memcmp(a.data, "ADAT", 4) == 0) {
+        if (selected && base != 0)
+            fail("a standalone ADAT bank starts at offset zero");
+        selected = true;
+    } else if (memcmp(a.data, "9FPR", 4) != 0) {
+        fail("expected an RPF9 archive or a standalone ADAT bank");
+    }
+    if ((list_only || track) && !selected)
+        fail("select an ADAT bank with --bank");
     Bank bank;
     if (selected && !bank_at(a, base, &bank))
         fail("no readable ADAT bank at the selected offset");
@@ -699,36 +732,40 @@ int main(int argc, char **argv)
         }
     }
 
-    size_t root_end = strlen(output);
+    size_t root_end = output ? strlen(output) : 0;
     while (root_end > 1 && output[root_end - 1] == '/')
         --root_end;
     char *path = malloc(root_end + 128);
     if (!path)
         system_fail("allocating output path");
-    memcpy(path, output, root_end);
-    path[root_end] = '\0';
-    make_output(path);
-    strcpy(path + root_end, "/manifest.tsv");
-    FILE *manifest = fopen(path, "wx");
-    if (!manifest)
-        system_fail(path);
+    FILE *manifest = stdout;
+    path[0] = '\0';
+    if (!list_only) {
+        memcpy(path, output, root_end);
+        path[root_end] = '\0';
+        make_output(path);
+        strcpy(path + root_end, "/manifest.tsv");
+        manifest = fopen(path, "wx");
+        if (!manifest)
+            system_fail(path);
+    }
     fputs("bank\tbank_flags\tentry\tentry_id\tpayload_tag\ttag_occurrence\tcodec_id\tcodec_name\t"
           "sample_rate_hz\tchannels\tdeclared_samples\tstart\tend_exclusive\tstatus\toutput_bytes\tpath\ttag_ranges\n",
           manifest);
 
     Totals totals = {0};
     if (selected) {
-        extract_bank(a, bank, raw, &mux, manifest, path, root_end, &totals);
+        extract_bank(a, bank, raw, list_only, track, occurrence, &mux, manifest, path, root_end, &totals);
     } else {
         for (size_t offset = 0; offset + 16 <= size; offset += 16) {
             if (a.data[offset] != 'A' || !bank_at(a, offset, &bank))
                 continue;
-            extract_bank(a, bank, raw, &mux, manifest, path, root_end, &totals);
+            extract_bank(a, bank, raw, list_only, track, occurrence, &mux, manifest, path, root_end, &totals);
             if (totals.banks % 100 == 0)
                 print_totals(stderr, totals);
         }
     }
-    if (fclose(manifest) != 0)
+    if (!list_only && fclose(manifest) != 0)
         system_fail("closing manifest");
     free(path);
     free(mux.packets);
@@ -737,6 +774,7 @@ int main(int argc, char **argv)
     munmap(mapping, size);
     if (!totals.banks)
         fail("no readable ADAT banks found");
-    print_totals(stdout, totals);
+    if (!list_only)
+        print_totals(stdout, totals);
     return 0;
 }

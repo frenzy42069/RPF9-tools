@@ -55,11 +55,26 @@ pub fn inflate(data: &[u8], at: usize, out: &mut Vec<u8>) -> Option<usize> {
 pub fn classify_stream(data: &[u8], at: usize) -> Option<Stream> {
     let mut out = Vec::new();
     let stored = inflate(data, at, &mut out)?;
-    Some(Stream { at, stored_len: stored, decoded_len: out.len(), kind: classify(&out) })
+    Some(Stream {
+        at,
+        stored_len: stored,
+        decoded_len: out.len(),
+        kind: classify(&out),
+    })
 }
 
 /// Walk `[start, end)` at 16-byte steps, recording every complete zlib stream.
 pub fn walk(data: &[u8], start: usize, end: usize) -> Vec<Stream> {
+    walk_with(data, start, end, |_, _| {})
+}
+
+/// Run a callback for each verified stream while its decoded bytes are available.
+pub fn walk_with(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    mut on_stream: impl FnMut(&Stream, &[u8]),
+) -> Vec<Stream> {
     let mut streams = Vec::new();
     let mut out: Vec<u8> = Vec::new();
     let mut at = start;
@@ -71,12 +86,14 @@ pub fn walk(data: &[u8], start: usize, end: usize) -> Vec<Stream> {
         out.clear();
         match inflate(data, at, &mut out) {
             Some(stored) => {
-                streams.push(Stream {
+                let stream = Stream {
                     at,
                     stored_len: stored,
                     decoded_len: out.len(),
                     kind: classify(&out),
-                });
+                };
+                on_stream(&stream, &out);
+                streams.push(stream);
                 at = align16(at + stored);
             }
             None => at += 16,

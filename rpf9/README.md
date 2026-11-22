@@ -17,15 +17,32 @@ links, entry order, physical offset/size encoding) is encrypted — see
   - offs-compatible outputs (`index.tsv`, `report.txt`).
 - `rpf9-extract` — static dearchivator:
   `rpf9-extract [-n|--list] [-v|--verbose] <rpf> [outdir]`
-  writes `out/h<archive:06x>/<offset:08x>.<ext>` plus `index.tsv` and
-  `report.txt`. Offset-named: original names are unavailable until the
-  native directory is decoded.
-- `rpf9-fuse` — FUSE mount: `rpf9-fuse <rpf> [mntpoint]`.
-  Mount point tree: `<file>/h<archive:06x>/<offset:08x>.<ext>` — open the
-  archive as a folder; resources decode on read.
+  writes into `out/h<archive:06x>/`, with `index.tsv` and `report.txt` at the
+  output root. Supported drawables use their embedded names. Unnamed entries
+  use offsets, and duplicate names get an offset suffix. Use `--offset-names`
+  for the previous offset-based filenames throughout.
+- `rpf9-fuse` — FUSE mount: `rpf9-fuse [OPTIONS] <archive-or-build-directory> <mntpoint>`.
+  The mount uses the same filenames as extraction under
+  `<file>/h<archive:06x>/` for a single archive. Build-directory mounts
+  show each RPF as a folder and load large archives one range at a time.
 - `rpf9-convert` converts supported Xbox drawables and texture entries, and
   accepts OBJ geometry and common image files.
   See [converter examples](#model-and-texture-conversion).
+- `rpf9-navmesh` — Navmesh → Wavefront OBJ:
+  `rpf9-navmesh convert <input> [-o output.obj] [--offset N] [-v]`
+  Discovers navmesh geometry in an extracted navmesh resource
+  (e.g. `results/navmeshes/h*/…/*.rsc`): the longest run of plausible f32
+  triples with the most substantial world-like coordinates becomes the
+  vertices, and the longest run of nonzero index values (u16/u32) becomes
+  the faces. Heuristic — see `rpf9-navmesh/src/mesh.rs`; nothing is decoded
+  from the native format yet.
+- `rpf9-shader` — Shader data decompiler:
+  `rpf9-shader <input> [-o report.txt] [--offset N]`
+  Decompiles shader data — the `PS\0\x09` PSO caches from `shaders.rpf`
+  (cache id, version, hash, header words) and `SGD5` blobs (hash, count,
+  header words, entry table). Program-table semantics are not decoded.
+  Fixtures: `rpf9-shader results/shaders/h000000/10579000.ps09` or
+  `rpf9-shader results/shaders/sgd5_a.bin`.
 
 Requires: `cargo` to build; `fuser` tier also needs `fusermount3` +
 `/dev/fuse`.
@@ -43,6 +60,48 @@ Requires: `cargo` to build; `fuser` tier also needs `fusermount3` +
     mkdir /tmp/fuse_data && ./target/debug/rpf9-fuse game/data.rpf /tmp/fuse_data
     ls /tmp/fuse_data/data.rpf/h11de000 | head
     fusermount3 -u /tmp/fuse_data
+
+## Unified CLI
+
+Build the workspace or install the `rpf9` package. The catalog prints TSV by
+default and JSON with `--json`. Use the same selection flags for batch exports.
+Outputs include archive offsets or texture indices where needed to distinguish
+assets with the same name. The scan defaults to 256 MiB and 100 results.
+`--all` scans to EOF. Use `--limit` to cap results and `--name` to filter names.
+
+```sh
+cargo build --manifest-path rpf9/Cargo.toml --release --workspace
+rpf9/target/release/rpf9 list game/levels.rpf --kind model --all --limit 10 --json
+rpf9/target/release/rpf9 export game/levels.rpf --kind model --all --name laundry -o models
+rpf9/target/release/rpf9 export game/textures.rpf --kind texture --name pistol_glass -o textures
+rpf9/target/release/rpf9 export game/data.rpf --kind localization --offset 0x1219010 -o strings
+rpf9/target/release/rpf9 export game/movies.rpf --kind video --offset 0x7000 -f bk2 -o videos
+rpf9/target/release/rpf9 extract --index-stdout game/script.rpf
+rpf9/target/release/rpf9 extract game/levels.rpf extracted-levels
+```
+
+Models default to GLB, textures to PNG, localization to JSONL, and video to
+MP4. Supported formats appear under `rpf9 export --help`. Use
+`--ffmpeg=/path/to/ffmpeg` to choose an FFmpeg build. Xbox Bink2 needs a build
+that can decode those streams, such as the [mobipeg FFmpeg fork](https://github.com/quatric/mobipeg).
+`--format bk2` copies the original clip. `rpf9 mount` delegates to the
+workspace FUSE tool.
+
+Audio defaults to original packets. On Linux, build the ADAT helper beside
+the release CLI or specify it with `--audio-extractor`. With libopus
+available, the helper wraps Opus packets without re-encoding and retains
+XMA2 in `.xma`. `--format wav` also writes decoded WAV files using FFmpeg.
+
+```sh
+cc -O2 -std=c11 scripts/rpf9_extract_audio.c -ldl -o rpf9/target/release/rpf9-extract-audio
+rpf9/target/release/rpf9 export game/audio.rpf --kind audio --offset 0x13da000 -o audio
+```
+
+Native drawables can include UVs. Material links and skinning still require
+format coverage. Texture export covers supported layouts, including named
+BC2, BC3, BC5, and BC7 textures from embedded dictionaries and TTPF packs.
+Localization rows carry recovered keys and use a null locale when the
+resource does not identify it.
 
 ## Model and texture conversion
 
@@ -62,13 +121,13 @@ embedded buffer or `obj` for Wavefront OBJ. OBJ input preserves positions,
 normals, and UVs. For RAGE drawables, pass the offset of the zlib stream using
 `--offset` in decimal or hexadecimal. The decoder supports the observed
 `.#dr` layout with two zlib streams, packed position data, and 16-bit meshlet
-vertex maps. Drawable export writes triangle geometry. Materials, skinning,
-and drawable normals and UVs are currently unsupported.
+vertex maps. The exporter writes triangle geometry and native UVs where
+available. Materials, skinning, and drawable normals are currently unsupported.
 
 Texture output defaults to PNG. Other choices are `jpeg` (alias `jpg`),
 `webp`, `bmp`, and `tga`. The reader accepts common images and supported
 RDS5/TTPF entries. Use `--entry N` to select a zero-based texture index
-(default 0). Xbox texture support covers BC3 and BC7 with zlib chunks and
+(default 0). Xbox texture support covers BC2, BC3, BC5, and BC7 with raw or zlib chunks and
 4 KiB or 64 KiB tiling, with both dimensions divisible by 256. The exporter
 writes one image per conversion.
 
@@ -80,6 +139,30 @@ explicitly selected texture index or drawable offset in the output filename.
 It refuses to overwrite existing files.
 
 ### Linux file manager previews
+
+Mount the entire build once to browse it in Double Commander or any other
+file manager. The mountpoint should be an empty directory and the Linux host
+needs `/dev/fuse`.
+
+```sh
+cargo build --manifest-path rpf9/Cargo.toml --release -p rpf9 -p rpf9-fuse
+cc -O2 -std=c11 scripts/rpf9_extract_audio.c -ldl -o rpf9/target/release/rpf9-extract-audio
+rpf9/target/release/rpf9 mount /path/to/build /path/to/mountpoint --readable
+```
+
+The directory layout follows the build directory. Each `.rpf` is a folder.
+Large archives open at a list of 64 MiB ranges. The first visit to a range
+scans it and saves the listing for later visits and mounts. In `--readable`
+mode, supported `.ttpf` packs and embedded texture dictionaries open as
+folders of PNGs, ADAT banks have folders of Opus or XMA tracks, and named
+drawables expose GLB previews. The raw entries remain available. Pass
+`--ffmpeg /path/to/bink2-capable/ffmpeg` to add MP4 previews.
+
+The first open of a converted file prepares a seekable cached copy.
+`--cache-dir PATH` changes the cache location from
+`${XDG_CACHE_HOME:-$HOME/.cache}/rpf9`. `--cache-bytes N` sets the media
+budget, which defaults to 10 GiB. Folder indexes use a separate namespace
+and survive media eviction. Keep input archives stable while mounted.
 
 The RPF9 WFX plugin opens archives as read-only folders in Double Commander.
 Large archives open at a list of offset folders. Entering a 64 MiB range
