@@ -535,6 +535,44 @@ mod tests {
     }
 
     #[test]
+    fn video_preview_reports_nonzero_size_before_conversion() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("movies.rpf");
+        let mut data = vec![0; 64];
+        data[..4].copy_from_slice(b"9FPR");
+        data[16..20].copy_from_slice(b"KB2n");
+        data[20..24].copy_from_slice(&16_u32.to_le_bytes());
+        data[24..28].copy_from_slice(&1_u32.to_le_bytes());
+        std::fs::write(&source, data).unwrap();
+
+        let ffmpeg = dir.path().join("ffmpeg");
+        std::fs::write(
+            &ffmpeg,
+            "#!/bin/sh\nfor output do :; done\nprintf fake-mp4 > \"$output\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = dir.path().join("cache");
+        let tree = Tree::new(
+            source,
+            Cache::new(cache.clone(), 100_000).unwrap(),
+            Some(Options {
+                ffmpeg: Some(ffmpeg),
+                ..Options::default()
+            }),
+        );
+
+        let preview = child(&tree, ROOT, "00000010.mp4");
+        assert_eq!(tree.attr(preview).unwrap().size, 24);
+        assert_eq!(cache.join("media").read_dir().unwrap().count(), 0);
+        let file = materialize(&tree, preview);
+        assert_eq!(file.metadata().unwrap().len(), 8);
+        assert_eq!(tree.attr(preview).unwrap().size, 8);
+    }
+
+    #[test]
     fn build_archive_views_are_lazy_and_generate_media() {
         let Some(source) = std::env::var_os("RPF9_TEST_BUILD").map(PathBuf::from) else {
             return;

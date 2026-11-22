@@ -188,7 +188,8 @@ folders of PNGs, ADAT banks have folders of Opus or XMA tracks, and named
 drawables expose GLB previews. The raw entries remain available. Pass
 `--ffmpeg /path/to/bink2-capable/ffmpeg` to add MP4 previews.
 
-The first open of a converted file prepares a seekable cached copy.
+The first open of a converted file prepares a seekable cached copy. MP4
+previews show the source clip size until the converted size is available.
 `--cache-dir PATH` changes the cache location from
 `${XDG_CACHE_HOME:-$HOME/.cache}/rpf9`. `--cache-bytes N` sets the media
 budget, which defaults to 10 GiB. Folder indexes use a separate namespace

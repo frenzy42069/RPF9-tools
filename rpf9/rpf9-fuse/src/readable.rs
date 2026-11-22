@@ -53,6 +53,8 @@ impl FileKind {
     pub(crate) fn listed_size(&self) -> u64 {
         match self {
             Self::Audio { size, .. } => *size,
+            // Some players reject empty files before open can start the transcode.
+            Self::Video { stored, .. } => *stored,
             _ => 0,
         }
     }
@@ -337,6 +339,9 @@ fn video(
         .arg(output)
         .output()?;
     success(result, "Bink2 conversion (requires a Bink2-capable FFmpeg)")?;
+    if output.metadata()?.len() == 0 {
+        return Err(io::Error::other("Bink2 conversion produced an empty MP4"));
+    }
     Ok(())
 }
 
